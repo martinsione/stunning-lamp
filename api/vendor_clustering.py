@@ -48,7 +48,7 @@ class VendorClusterizer:
         name = re.sub(r'\s+', ' ', name)
         return name.strip().upper()
         
-    def _fuzzy_cluster(self, vendors: List[str], min_similarity: float = 0.6) -> Dict[int, List[str]]:
+    def _fuzzy_cluster(self, vendors: List[str], min_similarity: float = 0.5) -> Dict[int, List[str]]:
         """Cluster vendors using simple similarity-based clustering."""
         clusters: Dict[int, List[str]] = {}
         processed_vendors = [self._preprocess_vendor_name(v) for v in vendors]
@@ -68,13 +68,18 @@ class VendorClusterizer:
                 # Calculate average similarity with cluster members
                 similarities = []
                 for cluster_vendor in cluster_vendors:
+                    processed_cluster_vendor = self._preprocess_vendor_name(cluster_vendor)
                     similarity = Levenshtein.normalized_similarity(
                         processed_vendors[i],
-                        self._preprocess_vendor_name(cluster_vendor)
+                        processed_cluster_vendor
                     )
                     # Boost similarity if names start with same word
-                    if processed_vendors[i].split()[0] == self._preprocess_vendor_name(cluster_vendor).split()[0]:
+                    if processed_vendors[i].split()[0] == processed_cluster_vendor.split()[0]:
                         similarity = (similarity + 1) / 2
+                    # Additional boost for partial prefix matches
+                    elif (processed_vendors[i].startswith(processed_cluster_vendor) or 
+                          processed_cluster_vendor.startswith(processed_vendors[i])):
+                        similarity = (similarity + 0.3)
                     similarities.append(similarity)
                 
                 avg_similarity = np.mean(similarities)
@@ -137,19 +142,24 @@ Respond with ONLY the suggested name, nothing else."""
                 # Get cluster name from LLM if available
                 cluster_name = await self._get_llm_cluster_name(cluster_vendors)
                 
-                # Calculate confidence based on average similarity within cluster
-                similarities = []
-                processed_vendors_in_cluster = [self._preprocess_vendor_name(v) for v in cluster_vendors]
-                for i, v1 in enumerate(processed_vendors_in_cluster):
-                    for v2 in processed_vendors_in_cluster[i+1:]:
-                        similarity = Levenshtein.normalized_similarity(v1, v2)
-                        if v1.split()[0] == v2.split()[0]:
-                            similarity = (similarity + 1) / 2
-                        similarities.append(similarity)
-                
-                confidence = np.mean(similarities) if similarities else 0.75
-                
+                # Calculate individual confidence for each vendor
                 for vendor in cluster_vendors:
+                    processed_vendor = self._preprocess_vendor_name(vendor)
+                    processed_recommendation = self._preprocess_vendor_name(cluster_name)
+                    
+                    # Calculate base similarity
+                    confidence = Levenshtein.normalized_similarity(processed_vendor, processed_recommendation)
+                    
+                    # Apply boosts
+                    if processed_vendor.split()[0] == processed_recommendation.split()[0]:
+                        confidence = (confidence + 1) / 2
+                    elif (processed_vendor.startswith(processed_recommendation) or 
+                          processed_recommendation.startswith(processed_vendor)):
+                        confidence = (confidence + 0.3)
+                    
+                    # Ensure confidence is between 0 and 1
+                    confidence = min(max(confidence, 0), 1)
+                    
                     results.append(VendorMatch(
                         vendor_name=vendor,
                         cluster=cluster_id,
